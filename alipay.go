@@ -60,11 +60,11 @@ var CommonArgs = []Arg{
 type Spear struct {
 	site_url string
 	appid    string
-	//                                  //  desc   | filename            | name in doc
-	privk               *rsa.PrivateKey   // 应用私钥 RSA 2048
-	app_cert_sn         string            // alisn of appCertPublicKey_.crt 应用公钥证书
-	app_cert            *x509.Certificate // appCertPublicKey_.crt 应用公钥证书
-	alipay_root_cert_sn string            // alisn of alipayRootCert.crt    支付宝根证书
+	//                                  //  desc             | filename                            | name in doc
+	privk               *rsa.PrivateKey   // app private key | 应用私钥RSA2048-敏感数据，请妥善保管.txt | 应用私钥 RSA 2048
+	app_cert_sn         string            // alisn of        | appCertPublicKey_.crt               | 应用公钥证书's alisn
+	app_cert            *x509.Certificate //                 | appCertPublicKey_.crt               | 应用公钥证书
+	alipay_root_cert_sn string            // alisn of        | alipayRootCert.crt                  | 支付宝根证书
 	aes_key             []byte
 	client              *http.Client
 }
@@ -125,6 +125,10 @@ func NewSandboxSpear(appid string,
 	app_private_key string,
 	app_public_key string,
 	aes_key string) (*Spear, error) {
+	if !strings.HasPrefix(appid, "90") {
+		panic("sandbox appid should start with 90")
+	}
+
 	pr, err := NewSpear(appid, app_private_key, app_public_key, aes_key)
 	if pr != nil {
 		pr.site_url = "https://openapi-sandbox.dl.alipaydev.com/gateway.do"
@@ -138,10 +142,10 @@ func NewSandboxSpear(appid string,
 //	MIIDmTCCAoGgAwIBAgIQICMGFE/GVT29GaZP4DEOYzANBgkqhkiG9w0BAQsFADCBkTELMAkGA1UE
 //	...
 //	-----END PRIVATE KEY-----
-func hex2block(bs []byte, types ...string) (*pem.Block, []byte) {
+func hex2block(bs []byte, typos ...string) (*pem.Block, []byte) {
 	typo := "PRIVATE KEY"
-	if len(types) > 0 {
-		typo = types[0]
+	if len(typos) > 0 {
+		typo = typos[0]
 	}
 
 	lines := [][]byte{
@@ -152,7 +156,7 @@ func hex2block(bs []byte, types ...string) (*pem.Block, []byte) {
 
 	for i := 0; i <= len/76; i++ {
 		tail := (i + 1) * 76
-		if tail > len {
+		if tail > len { // min(tail, len)
 			tail = len
 		}
 		// fmt.Printf("%d - %d\n", i*76, tail)
@@ -166,12 +170,12 @@ func hex2block(bs []byte, types ...string) (*pem.Block, []byte) {
 	return pem.Decode(bytes.Join(lines, []byte("\n")))
 }
 
-// shit `sn`
+// generate shit `sn`, md5(issuer + serial_number)
 func alisn(certs ...*x509.Certificate) string {
 	return strings.Join(
 		lo.Map(certs, func(cert *x509.Certificate, _ int) string {
 			bs := md5.Sum([]byte(cert.Issuer.String() + cert.SerialNumber.String()))
-			return fmt.Sprintf("%x", bs)
+			return fmt.Sprintf("%x", bs) // hex encode
 		}),
 		"_")
 }
@@ -185,13 +189,14 @@ func ali_root_sn() string {
 		if block != nil {
 			cert, err := x509.ParseCertificate(block.Bytes)
 			if err != nil {
-				log.Printf("parse %s", err)
+				log.Printf("parse failed %s", err)
 			}
 			if cert != nil {
 				certs = append(certs, cert)
 			}
 		}
 
+		// no more block
 		if len(left) == 0 {
 			break
 		}
@@ -202,8 +207,7 @@ func ali_root_sn() string {
 	return alisn(certs...)
 }
 
-// sign and base64
-// https://opendocs.alipay.com/common/057k53?pathHash=7b14a0af
+// sign with private key and base64, see [doc](https://opendocs.alipay.com/common/057k53?pathHash=7b14a0af)
 func (pr *Spear) Sign(s string) string {
 	h := sha256.New()
 	h.Write([]byte(s))
@@ -217,7 +221,7 @@ func (pr *Spear) Sign(s string) string {
 	return base64.StdEncoding.EncodeToString(signed)
 }
 
-// should not be url.Values.Encode
+// should not use url.Values.Encode
 func stupid_joint(m map[string]string) string {
 	ks := lo.Keys(m)
 	sort.Strings(ks)
@@ -247,7 +251,7 @@ func PKCS7UnPadding(b []byte) []byte {
 	return b[:(size - unpad_size)]
 }
 
-// aes encrypt for
+// aes encrypt with zero-filled iv
 func (pr *Spear) encrypt(src []byte) []byte {
 	block, err := aes.NewCipher(pr.aes_key)
 	if err != nil {
@@ -255,25 +259,25 @@ func (pr *Spear) encrypt(src []byte) []byte {
 	}
 
 	bs := PKCS7Padding(src, block.BlockSize())
-	iv := make([]byte, block.BlockSize()) // CAUTION: correct iv not worked
+	iv := make([]byte, block.BlockSize()) // CAUTION: random filled iv not worked
 	rs := make([]byte, len(bs))
 
 	cipher.NewCBCEncrypter(block, iv).CryptBlocks(rs, bs)
 	return rs
 }
 
+// Only [biz_content] args, not include any common args
 func (pr *Spear) BuildRequest(api_method string, biz_args map[string]string) *http.Request {
-	// 1 aes biz_content
-	// https://opendocs.alipay.com/common/02kdnc
+	// 1 encrypt biz_content, see [doc](https://opendocs.alipay.com/common/02kdnc)
 	bs, _ := json.Marshal(biz_args)
 	enc_bs := pr.encrypt(bs)
 
-	// 2 add command args
+	// 2 build the args with common args
 	args := map[string]string{
 		"app_id":              pr.appid,
 		"method":              api_method,
 		"timestamp":           time.Now().Format("2006-01-02 15:04:05"),
-		"biz_content":         base64.StdEncoding.EncodeToString(enc_bs),
+		"biz_content":         base64.StdEncoding.EncodeToString(enc_bs), // set biz_content here
 		"app_cert_sn":         pr.app_cert_sn,
 		"alipay_root_cert_sn": pr.alipay_root_cert_sn, // for gateway error miss_alipay_root_cert_sn
 	}
@@ -289,17 +293,12 @@ func (pr *Spear) BuildRequest(api_method string, biz_args map[string]string) *ht
 	to_sign := stupid_joint(args)
 	args["sign"] = pr.Sign(to_sign)
 
-	log.Printf("biz_content: %x\nenc: %x\nbase64: %s", bs, enc_bs, args["biz_content"])
+	// log.Printf("biz_content: %x\nenc: %x\nbase64: %s", bs, enc_bs, args["biz_content"])
+	// log.Printf("sign %s \nto %s", to_sign, args["sign"])
 
-	// set biz_content here
-	log.Printf("sign %s \nto %s", to_sign, args["sign"])
-
-	us := pr.site_url + "?" + encode(args)
-	log.Printf("url: %s", us)
-
-	uri, erp := url.Parse(us)
+	uri, erp := url.Parse(pr.site_url + "?" + encode(args))
 	if erp != nil {
-		log.Fatalf("make requst failed %s", erp)
+		log.Fatalf("make url failed %s", erp)
 		return nil
 	}
 
@@ -309,15 +308,21 @@ func (pr *Spear) BuildRequest(api_method string, biz_args map[string]string) *ht
 	}
 }
 
-func (pr *Spear) Do(api_method string, biz_args map[string]string) {
+func (pr *Spear) Do(api_method string, biz_args map[string]string) (*http.Response, error) {
 	req := pr.BuildRequest(api_method, biz_args)
+	if req == nil {
+		return nil, errors.New("build request failed")
+	}
+
 	resp, err := pr.client.Do(req)
-	_ = err
-	_ = resp
-	for k, v := range resp.Header {
-		log.Printf("%s=%s", k, v[0])
+	if false {
+		for k, v := range resp.Header {
+			log.Printf("%s=%s", k, v[0])
+		}
+		if bs, err := io.ReadAll(resp.Body); err == nil {
+			log.Print(string(bs))
+		}
 	}
-	if bs, err := io.ReadAll(resp.Body); err == nil {
-		log.Print(string(bs))
-	}
+
+	return resp, err
 }
