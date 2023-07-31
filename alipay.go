@@ -1,6 +1,6 @@
 // Most simply alipay SDK implement in Go
 //
-//	pr, err := NewSpare("appid", "app_private_key", "app_public_key", "aeskey")
+//	pr, err := NewSpear("appid", "app_private_key", "app_public_key", "aeskey")
 //	pr.Do("alipay.trade.page.pay", map[string]string{
 //	    "subject":      "支付测试",
 //	    "out_trade_no": "12312311",
@@ -57,41 +57,36 @@ var CommonArgs = []Arg{
 }
 
 // alipay.Client
-type Spare struct {
+type Spear struct {
 	site_url string
 	appid    string
 	//                                  //  desc   | filename            | name in doc
-	privk               *rsa.PrivateKey // 应用私钥 RSA 2048
-	app_cert_sn         string          // alisn of appCertPublicKey_.crt 应用公钥证书
-	alipay_root_cert_sn string          // alisn of alipayRootCert.crt    支付宝根证书
+	privk               *rsa.PrivateKey   // 应用私钥 RSA 2048
+	app_cert_sn         string            // alisn of appCertPublicKey_.crt 应用公钥证书
+	app_cert            *x509.Certificate // appCertPublicKey_.crt 应用公钥证书
+	alipay_root_cert_sn string            // alisn of alipayRootCert.crt    支付宝根证书
 	aes_key             []byte
 	client              *http.Client
 }
 
-func NewSpare(appid string,
+func NewSpear(appid string,
 	app_private_key string,
 	app_public_key string,
-	aes_key string) (*Spare, error) {
+	aes_key string) (*Spear, error) {
 	// private key
 	block, _ := hex2block([]byte(app_private_key))
 	var privk *rsa.PrivateKey
 	pa, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		privk, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+		pa, err = x509.ParsePKCS1PrivateKey(block.Bytes)
 		if err != nil {
 			return nil, err
 		}
 	}
-	if privk == nil {
-		p2, ok := pa.(*rsa.PrivateKey)
-		if !ok {
-			return nil, errors.New("not rsa.PrivateKey")
-		}
-		privk = p2
-	}
 
-	if privk == nil {
-		return nil, err
+	privk, ok := pa.(*rsa.PrivateKey)
+	if !ok {
+		return nil, errors.New("not rsa.PrivateKey")
 	}
 
 	// load app public cert, generate `alisn`
@@ -114,16 +109,27 @@ func NewSpare(appid string,
 		return nil, err
 	}
 
-	return &Spare{
-		// site_url: "https://openapi.alipay.com/gateway.do",
-		site_url:            "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+	return &Spear{
+		site_url:            "https://openapi.alipay.com/gateway.do",
 		appid:               appid,
 		aes_key:             akb,
 		app_cert_sn:         app_cert_sn,
+		app_cert:            cert,
 		alipay_root_cert_sn: alipay_root_cert_sn,
 		privk:               privk,
 		client:              http.DefaultClient,
 	}, nil
+}
+
+func NewSandboxSpear(appid string,
+	app_private_key string,
+	app_public_key string,
+	aes_key string) (*Spear, error) {
+	pr, err := NewSpear(appid, app_private_key, app_public_key, aes_key)
+	if pr != nil {
+		pr.site_url = "https://openapi-sandbox.dl.alipaydev.com/gateway.do"
+	}
+	return pr, err
 }
 
 // Convert raw hex string to pem block, like
@@ -198,7 +204,7 @@ func ali_root_sn() string {
 
 // sign and base64
 // https://opendocs.alipay.com/common/057k53?pathHash=7b14a0af
-func (pr *Spare) Sign(s string) string {
+func (pr *Spear) Sign(s string) string {
 	h := sha256.New()
 	h.Write([]byte(s))
 	hashed := h.Sum(nil)
@@ -242,7 +248,7 @@ func PKCS7UnPadding(b []byte) []byte {
 }
 
 // aes encrypt for
-func (pr *Spare) encrypt(src []byte) []byte {
+func (pr *Spear) encrypt(src []byte) []byte {
 	block, err := aes.NewCipher(pr.aes_key)
 	if err != nil {
 		panic(err)
@@ -256,7 +262,7 @@ func (pr *Spare) encrypt(src []byte) []byte {
 	return rs
 }
 
-func (pr *Spare) BuildRequest(api_method string, biz_args map[string]string) *http.Request {
+func (pr *Spear) BuildRequest(api_method string, biz_args map[string]string) *http.Request {
 	// 1 aes biz_content
 	// https://opendocs.alipay.com/common/02kdnc
 	bs, _ := json.Marshal(biz_args)
@@ -303,7 +309,7 @@ func (pr *Spare) BuildRequest(api_method string, biz_args map[string]string) *ht
 	}
 }
 
-func (pr *Spare) Do(api_method string, biz_args map[string]string) {
+func (pr *Spear) Do(api_method string, biz_args map[string]string) {
 	req := pr.BuildRequest(api_method, biz_args)
 	resp, err := pr.client.Do(req)
 	_ = err
