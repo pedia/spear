@@ -73,6 +73,7 @@ type Spear struct {
 	app_cert            *x509.Certificate //                 | appCertPublicKey_.crt               | 应用公钥证书
 	alipay_root_cert_sn string            // alisn of        | alipayRootCert.crt                  | 支付宝根证书
 	alipay_public_certs []*x509.Certificate
+	alicerts            map[string]*x509.Certificate // all cert map
 	aes_key             []byte
 	client              *http.Client
 }
@@ -105,10 +106,11 @@ func NewSpear(appid string,
 	}
 	app_cert_sn := alisn(cert)
 
-	//
+	// all found alipay public cert
 	pubs := []*x509.Certificate{}
 	if true {
-		rest := aliPublicPemForRSA2
+		// rest := bytes.Join([][]byte{aliPublicPemForRSA2, aliRootCert}, []byte("\n"))
+		rest := aliRootCert
 		for {
 			block, left := pem.Decode(rest)
 			cert, err := x509.ParseCertificate(block.Bytes)
@@ -123,10 +125,12 @@ func NewSpear(appid string,
 				break
 			}
 			rest = left
-
 		}
 	}
-	_ = pubs
+
+	cert_map := lo.FromEntries(lo.Map(pubs, func(c *x509.Certificate, _ int) lo.Entry[string, *x509.Certificate] {
+		return lo.Entry[string, *x509.Certificate]{Key: alisn(c), Value: c}
+	}))
 
 	// Sadly this not worked: invalid-alipay-root-cert-sn
 	// 687b59193f3f462dd5336e5abf83c5d8_8af620707e5ddd8c7e76747e86a604dc_02941eef3187dddf3d3b83462e1dfcf6
@@ -148,6 +152,7 @@ func NewSpear(appid string,
 		app_cert:            cert,
 		alipay_root_cert_sn: alipay_root_cert_sn,
 		alipay_public_certs: pubs,
+		alicerts:            cert_map,
 		privk:               privk,
 		client:              http.DefaultClient,
 	}, nil
@@ -263,18 +268,29 @@ func (pr *Spear) Verify(s, sign string) error {
 		return err
 	}
 
+	// normally, the first cert is worked
 	for _, cert := range pr.alipay_public_certs {
-		if err := rsa.VerifyPKCS1v15(cert.PublicKey.(*rsa.PublicKey), crypto.SHA256, hashed, signed_bs); err == nil {
-			return nil
+		// log.Print(alisn(cert))
+
+		pk, ok := cert.PublicKey.(*rsa.PublicKey)
+		if ok {
+			if err := rsa.VerifyPKCS1v15(pk, crypto.SHA256, hashed, signed_bs); err == nil {
+				return nil
+			}
 		}
 	}
 
-	if err := rsa.VerifyPKCS1v15(pr.app_cert.PublicKey.(*rsa.PublicKey), crypto.SHA256, hashed, signed_bs); err == nil {
-		return nil
-	}
-
-	if err := rsa.VerifyPKCS1v15(&pr.privk.PublicKey, crypto.SHA256, hashed, signed_bs); err == nil {
-		return nil
+	// alipay support given key, not worked
+	given := []byte(`MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAg+IC/Sez4kNRWNXnBM1cGgW9FBJyuvMCfI+ABPcItvquU0H/CKKUd6AYzixVu4yf7/kPVIEX94b53lDxkORPIKioTw/+b5AfzeD//tDkMt/PSE4HGxNSfidHpGCrDUrOg44ByPUX+BSs4vmTBWEXrcP5ncGrTwh65cCu6NPEH+nEh2GUq7Kzi/RyRHrr6gOJovFhSwIkfOeDSPheybspwXUGGlIxBTLOSsM84IJErGOx0ylLeR3knbQxaFLeQsBG4a/bLdT5QidCmoIe6c0k1ottW/82bUc2WoDBzzxE9fOWBLPUJ01HG7E8TIWbuZmaYg4zTiwfl9UZQ//3tve8JQIDAQAB`)
+	if block, _ := hex2block(given); block != nil {
+		if pub, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
+			pk, ok := pub.(*rsa.PublicKey)
+			if ok {
+				if err := rsa.VerifyPKCS1v15(pk, crypto.SHA256, hashed, signed_bs); err == nil {
+					return nil
+				}
+			}
+		}
 	}
 
 	return rsa.ErrVerification
@@ -323,6 +339,19 @@ func (pr *Spear) encrypt(src []byte) []byte {
 
 	cipher.NewCBCEncrypter(block, iv).CryptBlocks(rs, bs)
 	return rs
+}
+
+func (pr *Spear) decrypt(dest []byte) []byte {
+	block, err := aes.NewCipher(pr.aes_key)
+	if err != nil {
+		panic(err)
+	}
+
+	iv := make([]byte, block.BlockSize()) // CAUTION: random filled iv not worked
+	rs := make([]byte, len(dest))
+
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(rs, dest)
+	return PKCS7UnPadding(rs)
 }
 
 // Only [biz_content] args, not include any common args
@@ -381,23 +410,52 @@ func (pr *Spear) BuildRequest(api_method string, biz_args map[string]string, ove
 	}
 }
 
-func (pr *Spear) Do(api_method string, biz_args map[string]string, override_common_args ...Arg) (*http.Response, error) {
-	req := pr.BuildRequest(api_method, biz_args)
+// Should return decrypt content, resp, error
+func (pr *Spear) Do(api_method string, biz_args map[string]string, override_common_args ...Arg) (
+	map[string]string,
+	*http.Response, error) {
+	req := pr.BuildRequest(api_method, biz_args, override_common_args...)
 	if req == nil {
-		return nil, errors.New("build request failed")
+		return nil, nil, errors.New("build request failed")
 	}
 
 	resp, err := pr.client.Do(req)
-	if false {
-		for k, v := range resp.Header {
-			log.Printf("%s=%s", k, v[0])
-		}
-		if bs, err := io.ReadAll(resp.Body); err == nil {
-			log.Print(string(bs))
-		}
+	if err != nil {
+		return nil, resp, err
 	}
 
-	return resp, err
+	// can read resp.Body mulitple times
+	bs, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp, err
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(bs))
+
+	// try json
+	var sm map[string]string
+	if err := json.Unmarshal(bs, &sm); err != nil {
+		return nil, resp, err // none json is right?
+	}
+
+	// try decrypt biz content
+	if enc, ok := sm["alipay_trade_query_response"]; ok {
+		enc_bs, err := base64.StdEncoding.DecodeString(enc)
+		if err != nil {
+			return nil, resp, err
+		}
+
+		src_bs := pr.decrypt(enc_bs)
+
+		var biz_rs map[string]string
+		if err := json.Unmarshal(src_bs, &biz_rs); err != nil {
+			return nil, resp, err
+		}
+
+		return biz_rs, resp, nil
+	}
+
+	// even return full json body
+	return sm, resp, err
 }
 
 var CommonResponseArg = []Arg{
@@ -408,17 +466,42 @@ var CommonResponseArg = []Arg{
 	{string: "sign", opt: false},
 }
 
-func (pr *Spear) VerifyRequest(r *http.Request) bool {
+// convert url args to map[string]string
+// url decode
+func (pr *Spear) VerifyRequest(r *http.Request) error {
 	plain_map := lo.MapValues(r.URL.Query(), func(v []string, k string) string {
 		return v[0]
 	})
 
-	sign := plain_map["sign"]
-	delete(plain_map, "sign")
+	return pr.VerifyMap(plain_map)
+}
 
-	err := pr.Verify(stupid_joint(plain_map), sign)
-	if err != nil {
-		log.Printf("verify failed %s", err)
+// normally map come from json.Unmarshal
+func (pr *Spear) VerifyMap(m map[string]string) error {
+	sign, ok := m["sign"]
+	if !ok {
+		return errors.New("no sign in map")
 	}
-	return err == nil
+
+	sign_bs, err := base64.StdEncoding.DecodeString(sign)
+	if err != nil {
+		return err
+	}
+
+	if len(sign_bs) != 256 {
+		return errors.New("sign len wrong")
+	}
+
+	delete(m, "sign")
+
+	// try to find the correct public cert
+	if sn, ok := m["alipay_cert_sn"]; ok {
+		if cert, ok := pr.alicerts[sn]; ok {
+			hashed := sha256.Sum256([]byte(stupid_joint(m)))
+
+			return rsa.VerifyPKCS1v15(cert.PublicKey.(*rsa.PublicKey), crypto.SHA256, hashed[:], sign_bs)
+		}
+	}
+
+	return pr.Verify(stupid_joint(m), sign)
 }

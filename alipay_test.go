@@ -215,21 +215,21 @@ PzyPWSx9O07vRhN84Q==
 		})
 		log.Print(req.URL.String())
 	} else {
-		resp, err := pr.Do("alipay.trade.page.pay", map[string]string{
+		brm, resp, err := pr.Do("alipay.trade.page.pay", map[string]string{
 			"subject":      "支付测试",
 			"out_trade_no": "12312311",
 			"total_amount": "10.00",
 			"product_code": "FAST_INSTANT_TRADE_PAY",
 			"qr_pay_mode":  "0",
 		})
+		is.Nil(brm)
 		is.Equal(200, resp.StatusCode)
-		is.Nil(err)
+		is.NotNil(err) // html
 
 		for k, v := range resp.Header {
 			log.Printf("%s=%s", k, v[0])
 		}
 		if bs, err := io.ReadAll(resp.Body); err == nil {
-			//
 			if strings.Contains(resp.Header.Get("content-type"), "=GBK") {
 				if b, erd := simplifiedchinese.GBK.NewDecoder().Bytes(bs); erd == nil {
 					log.Print(string(b))
@@ -238,5 +238,14 @@ PzyPWSx9O07vRhN84Q==
 				log.Print(string(bs))
 			}
 		}
+	}
+
+	if true {
+		brs, resp, err := pr.Do("alipay.trade.query", map[string]string{
+			"out_trade_no": "12312311",
+		})
+		is.Nil(err)
+		is.Equal(200, resp.StatusCode)
+		is.NotEmpty(brs)
 	}
 }
