@@ -1,6 +1,7 @@
 // Most simply alipay SDK implement in Go
 //
 //	pr, err := NewSpear("appid", "app_private_key", "app_public_key", "aeskey")
+//
 //	pr.Do("alipay.trade.page.pay", map[string]string{
 //	    "subject":      "支付测试",
 //	    "out_trade_no": "12312311",
@@ -67,14 +68,14 @@ var CommonArgs = []Arg{
 type Spear struct {
 	site_url string
 	appid    string
-	//                                  //  desc             | filename                            | name in doc
-	privk               *rsa.PrivateKey   // app private key | 应用私钥RSA2048-敏感数据，请妥善保管.txt | 应用私钥 RSA 2048
-	app_cert_sn         string            // alisn of        | appCertPublicKey_.crt               | 应用公钥证书's alisn
-	app_cert            *x509.Certificate //                 | appCertPublicKey_.crt               | 应用公钥证书
-	alipay_root_cert_sn string            // alisn of        | alipayRootCert.crt                  | 支付宝根证书
-	alipay_public_certs []*x509.Certificate
-	alicerts            map[string]*x509.Certificate // all cert map
-	aes_key             []byte
+	//                                               // desc            | filename                            | name in doc
+	privk               *rsa.PrivateKey              // app private key | 应用私钥RSA2048-敏感数据，请妥善保管.txt | 应用私钥 RSA 2048
+	app_cert_sn         string                       // alisn of        | appCertPublicKey_.crt               | 应用公钥证书's alisn
+	app_cert            *x509.Certificate            //                 | appCertPublicKey_.crt               | 应用公钥证书
+	alipay_root_cert_sn string                       // alisn of        | alipayRootCert.crt                  | 支付宝根证书
+	alipay_public_certs []*x509.Certificate          // all ali certs   | alipayCertPublicKey_RSA2.crt
+	alicerts            map[string]*x509.Certificate // all ali certs(map)
+	aes_key             []byte                       // RSA2 keys in []byte
 	client              *http.Client
 }
 
@@ -296,7 +297,7 @@ func (pr *Spear) Verify(s, sign string) error {
 	return rsa.ErrVerification
 }
 
-// should not use url.Values.Encode
+// should not use url.Values.Encode in [Sign]
 func stupid_joint(m map[string]string) string {
 	ks := lo.Keys(m)
 	sort.Strings(ks)
