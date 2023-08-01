@@ -1,6 +1,7 @@
-# stupid_alipay
+# alipay SDK: spear
 
-Most simply alipay SDK implement in Go
+Most simply alipay SDK implement in Go. 
+In product please use [alipay](github.com/smartwalle/alipay) or [gopay](github.com/go-pay/gopay) instead.
 
 Example trade of a PC Web site
 ```go

@@ -1,10 +1,11 @@
 module github.com/pedia/stupid_alipay
 
-go 1.20
+go 1.18
 
 require (
 	github.com/samber/lo v1.38.1
 	github.com/stretchr/testify v1.8.4
+	golang.org/x/text v0.11.0
 )
 
 require (

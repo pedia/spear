@@ -40,6 +40,11 @@ type Arg struct {
 	max    int    // max size, not used
 	opt    bool   // optional?
 	def    string // default value
+	val    string // custom value
+}
+
+func DefArg(name, val string) Arg {
+	return Arg{string: name, val: val}
 }
 
 var CommonArgs = []Arg{
@@ -54,6 +59,8 @@ var CommonArgs = []Arg{
 	{string: "timestamp", max: 19, opt: false},
 	{string: "app_auth_token", max: 40, opt: true},
 	{string: "biz_content", max: 0, opt: false},
+	{string: "return_url", max: 0, opt: false},
+	{string: "notify_url", max: 0, opt: false},
 }
 
 // alipay.Client
@@ -65,6 +72,7 @@ type Spear struct {
 	app_cert_sn         string            // alisn of        | appCertPublicKey_.crt               | 应用公钥证书's alisn
 	app_cert            *x509.Certificate //                 | appCertPublicKey_.crt               | 应用公钥证书
 	alipay_root_cert_sn string            // alisn of        | alipayRootCert.crt                  | 支付宝根证书
+	alipay_public_certs []*x509.Certificate
 	aes_key             []byte
 	client              *http.Client
 }
@@ -97,6 +105,29 @@ func NewSpear(appid string,
 	}
 	app_cert_sn := alisn(cert)
 
+	//
+	pubs := []*x509.Certificate{}
+	if true {
+		rest := aliPublicPemForRSA2
+		for {
+			block, left := pem.Decode(rest)
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				log.Printf("parse failed %s", err)
+			}
+			if cert != nil {
+				pubs = append(pubs, cert)
+			}
+
+			if len(left) == 0 {
+				break
+			}
+			rest = left
+
+		}
+	}
+	_ = pubs
+
 	// Sadly this not worked: invalid-alipay-root-cert-sn
 	// 687b59193f3f462dd5336e5abf83c5d8_8af620707e5ddd8c7e76747e86a604dc_02941eef3187dddf3d3b83462e1dfcf6
 	// alipay_root_cert_sn := ali_root_sn()
@@ -116,6 +147,7 @@ func NewSpear(appid string,
 		app_cert_sn:         app_cert_sn,
 		app_cert:            cert,
 		alipay_root_cert_sn: alipay_root_cert_sn,
+		alipay_public_certs: pubs,
 		privk:               privk,
 		client:              http.DefaultClient,
 	}, nil
@@ -221,6 +253,33 @@ func (pr *Spear) Sign(s string) string {
 	return base64.StdEncoding.EncodeToString(signed)
 }
 
+func (pr *Spear) Verify(s, sign string) error {
+	h := sha256.New()
+	h.Write([]byte(s))
+	hashed := h.Sum(nil)
+
+	signed_bs, err := base64.StdEncoding.DecodeString(sign)
+	if err != nil {
+		return err
+	}
+
+	for _, cert := range pr.alipay_public_certs {
+		if err := rsa.VerifyPKCS1v15(cert.PublicKey.(*rsa.PublicKey), crypto.SHA256, hashed, signed_bs); err == nil {
+			return nil
+		}
+	}
+
+	if err := rsa.VerifyPKCS1v15(pr.app_cert.PublicKey.(*rsa.PublicKey), crypto.SHA256, hashed, signed_bs); err == nil {
+		return nil
+	}
+
+	if err := rsa.VerifyPKCS1v15(&pr.privk.PublicKey, crypto.SHA256, hashed, signed_bs); err == nil {
+		return nil
+	}
+
+	return rsa.ErrVerification
+}
+
 // should not use url.Values.Encode
 func stupid_joint(m map[string]string) string {
 	ks := lo.Keys(m)
@@ -267,7 +326,7 @@ func (pr *Spear) encrypt(src []byte) []byte {
 }
 
 // Only [biz_content] args, not include any common args
-func (pr *Spear) BuildRequest(api_method string, biz_args map[string]string) *http.Request {
+func (pr *Spear) BuildRequest(api_method string, biz_args map[string]string, override_common_args ...Arg) *http.Request {
 	// 1 encrypt biz_content, see [doc](https://opendocs.alipay.com/common/02kdnc)
 	bs, _ := json.Marshal(biz_args)
 	enc_bs := pr.encrypt(bs)
@@ -289,6 +348,14 @@ func (pr *Spear) BuildRequest(api_method string, biz_args map[string]string) *ht
 		}
 	}
 
+	// 3 additional common args
+	for i := 0; i < len(override_common_args); i++ {
+		a := override_common_args[i]
+		if a.val != "" {
+			args[a.string] = a.val
+		}
+	}
+
 	// 3 sign
 	to_sign := stupid_joint(args)
 	args["sign"] = pr.Sign(to_sign)
@@ -303,12 +370,18 @@ func (pr *Spear) BuildRequest(api_method string, biz_args map[string]string) *ht
 	}
 
 	return &http.Request{
-		Method: "POST",
+		Method: "GET",
 		URL:    uri,
+		Header: http.Header{
+			"content-type": []string{"application/x-www-form-urlencoded;charset=utf-8"},
+			// "cache-control": "no-cache",
+			// "connection": "keep-alive",
+			// JOKE: "user-agent": []string{"stupid-alipay/1.0"},
+		},
 	}
 }
 
-func (pr *Spear) Do(api_method string, biz_args map[string]string) (*http.Response, error) {
+func (pr *Spear) Do(api_method string, biz_args map[string]string, override_common_args ...Arg) (*http.Response, error) {
 	req := pr.BuildRequest(api_method, biz_args)
 	if req == nil {
 		return nil, errors.New("build request failed")
@@ -325,4 +398,27 @@ func (pr *Spear) Do(api_method string, biz_args map[string]string) (*http.Respon
 	}
 
 	return resp, err
+}
+
+var CommonResponseArg = []Arg{
+	{string: "code", opt: false},
+	{string: "msg", opt: false},
+	{string: "sub_code", opt: true},
+	{string: "sub_msg", opt: true},
+	{string: "sign", opt: false},
+}
+
+func (pr *Spear) VerifyRequest(r *http.Request) bool {
+	plain_map := lo.MapValues(r.URL.Query(), func(v []string, k string) string {
+		return v[0]
+	})
+
+	sign := plain_map["sign"]
+	delete(plain_map, "sign")
+
+	err := pr.Verify(stupid_joint(plain_map), sign)
+	if err != nil {
+		log.Printf("verify failed %s", err)
+	}
+	return err == nil
 }

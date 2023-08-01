@@ -10,10 +10,13 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"log"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 func TestRSASignAndVerify(t *testing.T) {
@@ -130,7 +133,6 @@ func TestClient(t *testing.T) {
 	_ = ResponseArgs
 }
 
-// not fake site
 func TestBuildRequest(t *testing.T) {
 	is := assert.New(t)
 
@@ -203,11 +205,38 @@ PzyPWSx9O07vRhN84Q==
 	signed_dest := "D1cJ1DtA7PohcNkNeeE+lk3xDvultFRd4plJUO9hWuSbS4H1pnsmBcnkUvl86jYgmbDr9zEGxHcCdQ7P6adBHsK2U7jEaJ1eZZv/vCrdh4w3v4WeqGuh43sB5ar2TFCVcEkKvQdpb35IBgAYmfTuQ6ZWrouBv96xUfJqdqU8hiC1ZCY0lPtZDyj8QxJ7NZ0E7uzFcSl85f9YWiu1w00hsZVh50ody6aDOznXDYWluN1Q7Wc2YTMV9pvcTyhEZMI/lDpasObJgx1JGBRT0Uwu34l9hH8v+RGojmvCYoSgqejjaxL/JHayHsPj/BGwNBNiArOy9DBKhZWijQv+lhc4NA=="
 	is.Equal(signed_dest, signed)
 
-	req := pr.BuildRequest("alipay.trade.page.pay", map[string]string{
-		"subject":      "支付测试",
-		"out_trade_no": "12312311",
-		"total_amount": "10.00",
-		"product_code": "FAST_INSTANT_TRADE_PAY",
-	})
-	log.Print(req.URL.String())
+	if false {
+		req := pr.BuildRequest("alipay.trade.page.pay", map[string]string{
+			"subject":      "支付测试",
+			"out_trade_no": "12312311",
+			"total_amount": "10.00",
+			"product_code": "FAST_INSTANT_TRADE_PAY",
+			"qr_pay_mode":  "0",
+		})
+		log.Print(req.URL.String())
+	} else {
+		resp, err := pr.Do("alipay.trade.page.pay", map[string]string{
+			"subject":      "支付测试",
+			"out_trade_no": "12312311",
+			"total_amount": "10.00",
+			"product_code": "FAST_INSTANT_TRADE_PAY",
+			"qr_pay_mode":  "0",
+		})
+		is.Equal(200, resp.StatusCode)
+		is.Nil(err)
+
+		for k, v := range resp.Header {
+			log.Printf("%s=%s", k, v[0])
+		}
+		if bs, err := io.ReadAll(resp.Body); err == nil {
+			//
+			if strings.Contains(resp.Header.Get("content-type"), "=GBK") {
+				if b, erd := simplifiedchinese.GBK.NewDecoder().Bytes(bs); erd == nil {
+					log.Print(string(b))
+				}
+			} else {
+				log.Print(string(bs))
+			}
+		}
+	}
 }
