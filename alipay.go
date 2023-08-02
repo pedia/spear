@@ -411,7 +411,7 @@ func (pr *Spear) BuildRequest(api_method string, biz_args map[string]string, ove
 	}
 }
 
-// Should return decrypt content, resp, error
+// Should return [decrypted content, resp, error]
 func (pr *Spear) Do(api_method string, biz_args map[string]string, override_common_args ...Arg) (
 	map[string]string,
 	*http.Response, error) {
@@ -438,21 +438,27 @@ func (pr *Spear) Do(api_method string, biz_args map[string]string, override_comm
 		return nil, resp, err // none json is right?
 	}
 
+	// alipay.trade.query => alipay_trade_query_response
+	// alipay.trade.close => alipay_trade_close_response
+	biz_key := strings.ReplaceAll(api_method, ".", "_") + "_response"
+
 	// try decrypt biz content
-	if enc, ok := sm["alipay_trade_query_response"]; ok {
+	if enc, ok := sm[biz_key]; ok {
 		enc_bs, err := base64.StdEncoding.DecodeString(enc)
 		if err != nil {
-			return nil, resp, err
+			return sm, resp, err
 		}
 
 		src_bs := pr.decrypt(enc_bs)
 
 		var biz_rs map[string]string
 		if err := json.Unmarshal(src_bs, &biz_rs); err != nil {
-			return nil, resp, err
+			return sm, resp, err
 		}
 
 		return biz_rs, resp, nil
+	} else {
+		log.Printf("resp json key failed %s, keys: %s", api_method, strings.Join(lo.Keys(sm), ","))
 	}
 
 	// even return full json body
