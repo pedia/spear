@@ -115,7 +115,7 @@ func NewSpear(appid string,
 			block, left := pem.Decode(rest)
 			cert, err := x509.ParseCertificate(block.Bytes)
 			if err != nil {
-				log.Printf("parse failed %s", err)
+				log.Printf("alipay parse cert failed %s", err)
 			}
 			if cert != nil {
 				pubs = append(pubs, cert)
@@ -469,9 +469,17 @@ var CommonResponseArg = []Arg{
 // convert url args to map[string]string
 // url decode
 func (pr *Spear) VerifyRequest(r *http.Request) error {
-	plain_map := lo.MapValues(r.URL.Query(), func(v []string, k string) string {
-		return v[0]
-	})
+	var plain_map map[string]string
+	if r.Method == "GET" {
+		plain_map = lo.MapValues(r.URL.Query(), func(v []string, k string) string {
+			return v[0]
+		})
+	} else if r.Method == "POST" {
+		r.ParseForm()
+		plain_map = lo.MapValues(r.PostForm, func(v []string, k string) string {
+			return v[0]
+		})
+	}
 
 	return pr.VerifyMap(plain_map)
 }
